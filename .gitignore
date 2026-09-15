@@ -1,0 +1,15 @@
+# 비밀값
+.env
+*.pem
+
+# 의존성 / 빌드 산출물
+node_modules/
+build/
+dist/
+__pycache__/
+*.pyc
+
+# OS
+Thumbs.db
+.DS_Store
+*.stackdump

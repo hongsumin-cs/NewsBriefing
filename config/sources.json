@@ -1,0 +1,85 @@
+{
+  "_verified": "2026-09-15 · 전 항목 실제 GET 하여 응답 확인",
+  "_note": {
+    "max_items": "피드당 가져올 최신 기사 수. 구글뉴스는 100건 이상 주므로 상한이 필요하다.",
+    "tag": "기본 태그. null 이면 summarizer 의 AI 가 부여한다. 값이 있으면 그 값으로 시작하되 AI 가 덮어쓸 수 있다.",
+    "use_description": "RSS <description> 을 AI 입력으로 쓸지 여부. 구글뉴스는 제목 반복이라 끈다.",
+    "tags": "반도체 / AI / 통신 / 정책 / 보안 / 클라우드 / 기타 — 7종. 게임은 기사량이 적어 제외했다."
+  },
+
+  "max_items_default": 15,
+
+  "sources": [
+    { "name": "전자신문 IT",       "url": "https://rss.etnews.com/Section901.xml",
+      "tag": null,       "enabled": true, "max_items": 20, "use_description": true },
+
+    { "name": "전자신문 과학",      "url": "https://rss.etnews.com/Section902.xml",
+      "tag": null,       "enabled": true, "max_items": 15, "use_description": true },
+
+    { "name": "블로터",            "url": "https://www.bloter.net/rss/allArticle.xml",
+      "tag": null,       "enabled": true, "max_items": 15, "use_description": true },
+
+    { "name": "바이라인네트워크",    "url": "https://byline.network/feed/",
+      "tag": null,       "enabled": true, "max_items": 15, "use_description": true },
+
+    { "name": "지디넷코리아",       "url": "https://feeds.feedburner.com/zdkorea",
+      "tag": null,       "enabled": true, "max_items": 15, "use_description": true },
+
+    { "name": "디지털투데이",       "url": "https://www.digitaltoday.co.kr/rss/allArticle.xml",
+      "tag": null,       "enabled": true, "max_items": 15, "use_description": true },
+
+    { "name": "아이뉴스24",        "url": "https://www.inews24.com/rss/news_it.xml",
+      "tag": null,       "enabled": true, "max_items": 15, "use_description": true },
+
+    { "name": "AI타임스",          "url": "https://www.aitimes.com/rss/allArticle.xml",
+      "tag": "AI",       "enabled": true, "max_items": 15, "use_description": true },
+
+    { "name": "AWS 한국 블로그",    "url": "https://aws.amazon.com/ko/blogs/korea/feed/",
+      "tag": "클라우드",   "enabled": true, "max_items": 10, "use_description": true },
+
+    { "name": "구글뉴스 반도체",     "url": "https://news.google.com/rss/search?q=반도체&hl=ko&gl=KR&ceid=KR:ko",
+      "tag": "반도체",     "enabled": true, "max_items": 15, "use_description": false },
+
+    { "name": "구글뉴스 통신",       "url": "https://news.google.com/rss/search?q=통신사+5G&hl=ko&gl=KR&ceid=KR:ko",
+      "tag": "통신",      "enabled": true, "max_items": 15, "use_description": false },
+
+    { "name": "구글뉴스 정보보안",    "url": "https://news.google.com/rss/search?q=정보보안&hl=ko&gl=KR&ceid=KR:ko",
+      "tag": "보안",      "enabled": true, "max_items": 15, "use_description": false }
+  ],
+
+  "_measured": {
+    "_note": "2026-09-15 실측. description 길이는 첫 기사 기준, HTML 태그 제거 후.",
+    "전자신문 IT":     { "items": 20,  "desc": 250 },
+    "전자신문 과학":    { "items": 20,  "desc": 250 },
+    "블로터":          { "items": 50,  "desc": 300 },
+    "바이라인네트워크":  { "items": 10,  "desc": 276 },
+    "지디넷코리아":     { "items": 30,  "desc": 1629, "content_encoded": 2073 },
+    "디지털투데이":     { "items": 50,  "desc": 300 },
+    "아이뉴스24":      { "items": 100, "desc": 126 },
+    "AI타임스":        { "items": 50,  "desc": 300 },
+    "AWS 한국 블로그":  { "items": 10,  "desc": 276, "content_encoded": 5020 },
+    "구글뉴스 반도체":   { "items": 109, "desc": 41, "_": "제목 반복" },
+    "구글뉴스 통신":     { "items": 100, "desc": 272, "_": "제목 반복 + 관련기사 링크" },
+    "구글뉴스 정보보안":  { "items": 102, "desc": 41, "_": "제목 반복" }
+  },
+
+  "_dead": [
+    { "name": "보안뉴스",      "tried": ["/media/news_rss.xml", "/media/news_rss.xml?mkind=1", "/media/rss.asp"],
+      "reason": "전부 HTML 응답 (200). RSS 엔드포인트를 못 찾음 — 보안 태그는 구글뉴스 피드로 대체" },
+    { "name": "디지털데일리",   "tried": ["/rss/allArticle.xml", "/news_rss.php", "/rss/S1N1.xml", "feedburner/ddaily"],
+      "reason": "HTML 응답 또는 404. feedburner 는 XML 이 깨져 있음 (undefined entity)" },
+    { "name": "플래텀",        "tried": ["/feed", "/feed/"],
+      "reason": "HTML 응답 (200)" },
+    { "name": "테크42",       "tried": ["www.tech42.co.kr/feed/", "tech42.co.kr/feed/"],
+      "reason": "DNS 해석 실패 — 사이트 자체가 없어진 것으로 보임" },
+    { "name": "더구루",        "tried": ["/rss/allArticle.xml"], "reason": "404" },
+    { "name": "ZDNet Korea (구 주소)", "tried": ["zdnet.co.kr/news/news_xml.asp"],
+      "reason": "404. 단 feedburner.com/zdkorea 는 정상 — 위 sources 에 포함" }
+  ],
+
+  "_excluded": {
+    "IT조선": "정상 동작하나(50건·desc 300자) 다른 종합 매체와 기사 중복이 많아 제외",
+    "구글뉴스 인공지능": "AI타임스와 중복. AI타임스가 죽으면 이걸로 대체",
+    "전자신문 Section903": "통신 섹션인 줄 알았으나 아님 (해외토픽 기사가 나옴)"
+  }
+}
