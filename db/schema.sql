@@ -1,8 +1,8 @@
 -- 국내 IT 뉴스 브리핑 — 테이블 정의
 
-CREATE DATABASE IF NOT EXISTS briefing
+CREATE DATABASE IF NOT EXISTS briefing_v2
   DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-USE briefing;
+USE briefing_v2;
 
 -- ── 기사 ──────────────────────────────────────────────────────
 -- 수집 데이터. 매일 쌓아 만드는 아카이브.
@@ -62,5 +62,5 @@ CREATE TABLE IF NOT EXISTS summaries (
 
 SELECT table_name, engine, table_collation
   FROM information_schema.tables
- WHERE table_schema = 'briefing'
+ WHERE table_schema = 'briefing_v2'
  ORDER BY table_name;
