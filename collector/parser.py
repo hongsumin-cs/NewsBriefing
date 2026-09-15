@@ -88,7 +88,8 @@ def truncate(text: str, limit: int) -> str:
     ends = [m.end() for m in _SENT_END_RE.finditer(head)]
     if ends and ends[-1] >= limit * 0.6:
         return head[: ends[-1]].rstrip()
-    return head.rstrip() + "…"
+    # 말줄임표까지 포함해 limit 를 넘지 않게 한 글자를 양보한다.
+    return text[: limit - 1].rstrip() + "…"
 
 
 def norm_title(title: str) -> str:
