@@ -25,7 +25,7 @@
     { "name": "지디넷코리아",       "url": "https://feeds.feedburner.com/zdkorea",
       "tag": null,       "enabled": true, "max_items": 15, "use_description": true },
 
-    { "name": "디지털투데이",       "url": "https://www.digitaltoday.co.kr/rss/allArticle.xml",
+    { "name": "디지털투데이",       "url": "https://www.digitaltoday.co.kr/rss/S1N6.xml",
       "tag": null,       "enabled": true, "max_items": 15, "use_description": true },
 
     { "name": "아이뉴스24",        "url": "https://www.inews24.com/rss/news_it.xml",
