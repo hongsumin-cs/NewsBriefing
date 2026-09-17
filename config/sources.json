@@ -2,7 +2,7 @@
   "_verified": "2026-09-15 · 전 항목 실제 GET 하여 응답 확인",
   "_note": {
     "max_items": "피드당 가져올 최신 기사 수",
-    "tag": "기본 태그. null 이면 summarizer 의 AI 가 부여. 값이 있으면 그 값으로 시작하되 AI 가 덮어쓰기 가능",
+    "tag": "기본 태그. 값이 있으면 그대로 확정되고 AI 를 거치지 않는다. null 이면 AI 가 부여",
     "use_description": "RSS <description> 을 AI 입력으로 쓸지 여부"
   },
 
