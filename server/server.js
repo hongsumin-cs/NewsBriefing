@@ -69,14 +69,20 @@ function normalizeKeyword(raw) {
     .trim();
 }
 
+// 발췌는 화면에 내보내지 않는다
+function withoutExcerpt(rows) {
+  return rows.map(({ description, ...rest }) => rest);
+}
+
 function parseDays(raw) {
   const n = parseInt(raw, 10);
   return Number.isFinite(n) && n > 0 ? Math.min(n, MAX_DAYS) : 30;
 }
 
 // tag 는 배치에서 AI 가 붙인 값 — 제목에 글자가 없어도 주제로
+// description 은 요약 Lambda 입력 전용 — 응답에서는 제거
 const SEARCH_SQL = `
-  SELECT id, title, url, source, tag,
+  SELECT id, title, url, source, tag, description,
          DATE_FORMAT(published_at, '%Y-%m-%d %H:%i') AS published_at
     FROM articles
    WHERE published_at >= NOW() - INTERVAL ? DAY
@@ -181,7 +187,7 @@ app.get("/search", requireDb, async (req, res) => {
 
   try {
     const [rows] = await pool.query(SEARCH_SQL, [days, keyword, keyword, SEARCH_LIMIT]);
-    res.json({ keyword, days, count: rows.length, articles: rows });
+    res.json({ keyword, days, count: rows.length, articles: withoutExcerpt(rows) });
   } catch (e) {
     console.error("검색 실패:", e.message);
     res.status(500).json({ error: "검색 실패" });
@@ -265,7 +271,7 @@ app.post("/summary", requireDb, async (req, res) => {
       cached: false,
       summary: ai.summary,
       highlights,
-      articles: candidates.filter((c) => usedIds.includes(c.id)),
+      articles: withoutExcerpt(candidates.filter((c) => usedIds.includes(c.id))),
       all_count: candidates.length,
     });
   } catch (e) {
