@@ -1,12 +1,11 @@
 """RSS 수집 → RDS 적재.
 
-스케줄로 하루 한 번 돈다. 파싱은 parser.py 가 하고, 여기서는 적재만 한다.
+스케줄로 하루 한 번 돈다.
+파싱은 parser.py에서 진행.
+여기서는 적재만 한다.
 
-배포 zip 루트에 세 파일이 함께 들어간다:
+배포 zip 루트에 세 파일:
     lambda_function.py · parser.py · sources.json
-
-    zip -j fetcher.zip \
-      lambdas/fetcher/lambda_function.py collector/parser.py config/sources.json
 
 의존성: pymysql (Layer)
 환경변수: DB_HOST · DB_USER · DB_PASSWORD · DB_NAME
@@ -25,7 +24,7 @@ import parser
 
 KST = timezone(timedelta(hours=9))
 
-# 여기서 읽는 sources.json 은 배포 zip 에 동봉된 사본
+# sources.json 은 배포 zip 에 동봉된 사본
 SOURCES_PATH = os.path.join(os.path.dirname(__file__), "sources.json")
 
 INSERT_SQL = """
