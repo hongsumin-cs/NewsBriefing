@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import datetime, timedelta, timezone
 
 import boto3
@@ -29,11 +30,14 @@ PROMPT_PATH = os.path.join(HERE, "tagging.md")
 REGION = os.environ.get("BEDROCK_REGION", "us-east-1")
 MODEL_ID = os.environ.get("MODEL_ID", "amazon.nova-lite-v1:0")
 
-# 분류에는 발췌 앞부분이면 충분하다. 저장된 600자를 그대로 보내면 입력만 커진다.
+# 분류에는 발췌 앞부분
 EXCERPT_LEN = 200
 
-# 한 번에 보낼 기사 수 상한. 남은 것은 다음 실행이 가져간다.
+# 한 번에 보낼 기사 수 상한
 BATCH_LIMIT = 300
+
+# 한 번의 Bedrock 호출에 담을 기사 수
+CHUNK_SIZE = 50
 
 FALLBACK_TAG = "기타"
 
@@ -58,17 +62,10 @@ def load_tags() -> list[str]:
 def load_prompt(tags: list[str]) -> str:
     with open(PROMPT_PATH, encoding="utf-8") as f:
         template = f.read()
-    # 프롬프트에 JSON 예시가 들어 있어 str.format 은 쓸 수 없다.
     return template.replace("{tags}", ", ".join(tags))
 
 
 def load_untagged(db) -> list[tuple]:
-    """아직 태그가 없는 기사를 가져온다.
-
-    발행일이 아니라 태그 유무로 고른다. 배치는 아침에 도는데 피드에는 어젯밤
-    기사가 그때 들어오므로, 날짜로 자르면 그 기사들이 매일 빠진다.
-    상태를 기준으로 하면 몇 번을 돌려도 이미 태그가 있는 기사는 건너뛴다.
-    """
     sql = """
         SELECT id, title, source, description
           FROM articles
@@ -90,12 +87,50 @@ def build_message(rows: list[tuple]) -> str:
     return "\n".join(lines)
 
 
-def extract_json(text: str) -> str:
-    """JSON 만 달라고 해도 앞뒤에 설명이 붙는 일이 있다."""
-    start, end = text.find("{"), text.rfind("}")
-    if start < 0 or end <= start:
-        raise ValueError("응답에서 JSON 을 찾을 수 없음")
-    return text[start : end + 1]
+def parse_response(text: str):
+    body = re.sub(r"^\s*```[a-zA-Z]*\s*", "", text)
+    body = re.sub(r"\s*```\s*$", "", body).strip()
+
+    try:
+        return json.loads(body)
+    except json.JSONDecodeError:
+        pass
+
+    # 앞뒤에 설명이 붙은 경우 — 배열이든 객체든 바깥쪽을 잘라낸다.
+    for opener, closer in (("[", "]"), ("{", "}")):
+        start, end = body.find(opener), body.rfind(closer)
+        if 0 <= start < end:
+            try:
+                return json.loads(body[start : end + 1])
+            except json.JSONDecodeError:
+                continue
+    raise ValueError(f"JSON 을 꺼내지 못함 ({len(text)}자)")
+
+
+def to_index_map(value) -> dict[int, str]:
+    if isinstance(value, dict) and "tags" in value:
+        value = value["tags"]
+
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            try:
+                out[int(str(k).strip())] = "" if v is None else str(v).strip()
+            except ValueError:
+                continue
+        return out
+
+    if isinstance(value, list):
+        # 배열로 오면 순서를 번호로
+        out = {}
+        for i, item in enumerate(value):
+            if isinstance(item, dict):
+                inner = item.get("tags") or item.get("tag")
+                item = inner[0] if isinstance(inner, list) and inner else inner
+            out[i] = "" if item is None else str(item).strip()
+        return out
+
+    raise ValueError(f"객체도 배열도 아님: {type(value).__name__}")
 
 
 def call_bedrock(bedrock, system_prompt: str, message: str) -> str:
@@ -103,26 +138,42 @@ def call_bedrock(bedrock, system_prompt: str, message: str) -> str:
         modelId=MODEL_ID,
         system=[{"text": system_prompt}],
         messages=[{"role": "user", "content": [{"text": message}]}],
-        # 분류는 매번 같은 답이 나오는 편이 낫다.
         inferenceConfig={"maxTokens": 4000, "temperature": 0},
     )
     return response["output"]["message"]["content"][0]["text"]
 
 
-def normalize(raw: str, count: int, allowed: set[str]) -> list[str]:
-    """응답을 기사 수와 같은 길이의 태그 목록으로 만든다.
+def normalize(raw: str, count: int, allowed: set[str]) -> tuple[list[str], int]:
+    """(태그 목록, 모델이 채우지 못한 개수) 를 돌려준다."""
+    mapping = to_index_map(parse_response(raw))
+    tags = [
+        mapping[i] if mapping.get(i) in allowed else FALLBACK_TAG
+        for i in range(count)
+    ]
+    missing = sum(1 for i in range(count) if mapping.get(i) not in allowed)
+    return tags, missing
 
-    개수가 어긋나면 기사와 태그가 통째로 밀리므로, 모자라면 채우고 넘치면 자른다.
-    """
-    values = json.loads(extract_json(raw)).get("tags") or []
-    if not isinstance(values, list):
-        raise ValueError("tags 가 배열이 아님")
 
-    tags = []
-    for i in range(count):
-        tag = str(values[i]).strip() if i < len(values) else ""
-        tags.append(tag if tag in allowed else FALLBACK_TAG)
-    return tags
+def tag_chunk(bedrock, system_prompt: str, rows: list[tuple],
+              allowed: set[str]) -> list[str] | None:
+    message = build_message(rows)
+    for attempt in (1, 2):
+        raw = ""
+        try:
+            raw = call_bedrock(bedrock, system_prompt, message)
+            tags, missing = normalize(raw, len(rows), allowed)
+            if missing:
+                print(f"  번호 {missing}개를 못 받아 기타로 채움 ({len(rows)}건 중)")
+            return tags
+        except (ValueError, json.JSONDecodeError, KeyError, IndexError) as e:
+            print(f"  실패 (시도 {attempt}): {type(e).__name__}: {e}")
+            # 원인을 보려면 실제 응답이 필요하다. 앞뒤만 남긴다.
+            print(f"  응답 앞 200자: {raw[:200]!r}")
+            print(f"  응답 뒤 100자: {raw[-100:]!r}")
+        except ClientError as e:
+            print(f"Bedrock 호출 실패: {e}")
+            raise
+    return None
 
 
 def save_tags(db, rows: list[tuple], tags: list[str]) -> int:
@@ -147,42 +198,35 @@ def lambda_handler(event, context):
             print("태그 없는 기사가 없습니다.")
             return {"date": now.strftime("%Y-%m-%d"), "articles": 0, "tagged": 0}
 
-        print(f"태그 없는 기사 {len(rows)}건")
+        print(f"태그 없는 기사 {len(rows)}건 · {CHUNK_SIZE}건씩 나눠 호출")
         bedrock = boto3.client("bedrock-runtime", region_name=REGION)
-        message = build_message(rows)
+        allowed = set(tags_allowed)
 
-        # 파싱 실패 시 1회 재시도. 그래도 안 되면 태그 없이 끝낸다 —
-        # 기사 목록은 이미 DB 에 있으므로 화면은 동작한다.
-        tags = None
-        for attempt in (1, 2):
-            try:
-                raw = call_bedrock(bedrock, system_prompt, message)
-                tags = normalize(raw, len(rows), set(tags_allowed))
-                break
-            except (ValueError, json.JSONDecodeError, KeyError, IndexError) as e:
-                print(f"응답 처리 실패 (시도 {attempt}): {type(e).__name__}: {e}")
-            except ClientError as e:
-                # AccessDeniedException 이면 Bedrock 모델 접근이 열려 있지 않다.
-                print(f"Bedrock 호출 실패: {e}")
-                raise
+        # 묶음별로 따로 호출
+        done_rows, done_tags, failed = [], [], 0
+        for start in range(0, len(rows), CHUNK_SIZE):
+            chunk = rows[start : start + CHUNK_SIZE]
+            print(f"[{start}-{start + len(chunk) - 1}] {len(chunk)}건")
+            tags = tag_chunk(bedrock, system_prompt, chunk, allowed)
+            if tags is None:
+                failed += len(chunk)
+                continue
+            done_rows.extend(chunk)
+            done_tags.extend(tags)
 
-        if tags is None:
-            print("재시도 후에도 실패. 태그 없이 종료합니다.")
-            return {"date": now.strftime("%Y-%m-%d"), "articles": len(rows),
-                    "tagged": 0, "error": "AI 응답 파싱 실패"}
-
-        tagged = save_tags(db, rows, tags)
+        tagged = save_tags(db, done_rows, done_tags) if done_rows else 0
     finally:
         db.close()
 
     distribution = {}
-    for tag in tags:
+    for tag in done_tags:
         distribution[tag] = distribution.get(tag, 0) + 1
-    print(f"태그 {tagged}건 반영 — {distribution}")
+    print(f"태그 {tagged}건 반영 · 실패 {failed}건 — {distribution}")
 
     return {
         "date": now.strftime("%Y-%m-%d"),
         "articles": len(rows),
         "tagged": tagged,
+        "failed": failed,
         "distribution": distribution,
     }
