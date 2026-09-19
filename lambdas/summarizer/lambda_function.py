@@ -28,7 +28,8 @@ SOURCES_PATH = os.path.join(HERE, "sources.json")
 PROMPT_PATH = os.path.join(HERE, "tagging.md")
 
 REGION = os.environ.get("BEDROCK_REGION", "us-east-1")
-MODEL_ID = os.environ.get("MODEL_ID", "amazon.nova-lite-v1:0")
+# 리전 간 추론 프로파일 ID
+MODEL_ID = os.environ.get("MODEL_ID", "us.anthropic.claude-sonnet-4-6")
 
 # 분류에는 발췌 앞부분
 EXCERPT_LEN = 200
@@ -96,7 +97,7 @@ def parse_response(text: str):
     except json.JSONDecodeError:
         pass
 
-    # 앞뒤에 설명이 붙은 경우 — 배열이든 객체든 바깥쪽을 잘라낸다.
+    # 앞뒤에 설명이 붙은 경우 — 배열이든 객체든 바깥쪽을 잘라냄
     for opener, closer in (("[", "]"), ("{", "}")):
         start, end = body.find(opener), body.rfind(closer)
         if 0 <= start < end:
