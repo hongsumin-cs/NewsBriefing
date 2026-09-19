@@ -59,7 +59,7 @@ def count_articles(db) -> int:
 
 
 def to_row(article: dict) -> tuple:
-    """기사 dict 를 INSERT 파라미터로. url_hash 를 여기서 만든다."""
+    """기사 dict → INSERT 파라미터. url_hash 생성 지점"""
     published = article["published_at"]
     return (
         hashlib.md5(article["url"].encode("utf-8")).hexdigest(),
