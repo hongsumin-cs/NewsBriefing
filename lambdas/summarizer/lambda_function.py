@@ -1,10 +1,10 @@
-"""태그가 없는 기사에 태그를 붙인다.
+"""태깅 + 이슈 묶기.
+
+① 태그 없는 기사에 태그 부여
+② 최근 24시간 수집분에서 오늘의 이슈 추출
 
 배포 zip 루트:
-    lambda_function.py · tagging.md · sources.json
-
-    zip -j summarizer.zip \
-      lambdas/summarizer/lambda_function.py prompts/tagging.md config/sources.json
+    lambda_function.py · tagging.md · daily_digest.md · sources.json
 
 의존성: pymysql (Layer)
 환경변수: DB_HOST · DB_USER · DB_PASSWORD · DB_NAME · MODEL_ID · BEDROCK_REGION
@@ -25,7 +25,8 @@ KST = timezone(timedelta(hours=9))
 
 HERE = os.path.dirname(__file__)
 SOURCES_PATH = os.path.join(HERE, "sources.json")
-PROMPT_PATH = os.path.join(HERE, "tagging.md")
+TAGGING_PROMPT = os.path.join(HERE, "tagging.md")
+DIGEST_PROMPT = os.path.join(HERE, "daily_digest.md")
 
 REGION = os.environ.get("BEDROCK_REGION", "us-east-1")
 # 리전 간 추론 프로파일 ID
@@ -39,6 +40,9 @@ BATCH_LIMIT = 300
 
 # 한 번의 Bedrock 호출에 담을 기사 수
 CHUNK_SIZE = 50
+
+# 하루에 뽑을 이슈 수
+MAX_DIGESTS = 5
 
 FALLBACK_TAG = "기타"
 
@@ -60,10 +64,12 @@ def load_tags() -> list[str]:
         return json.load(f)["tags"]
 
 
-def load_prompt(tags: list[str]) -> str:
-    with open(PROMPT_PATH, encoding="utf-8") as f:
+def load_prompt(path: str, **fields) -> str:
+    with open(path, encoding="utf-8") as f:
         template = f.read()
-    return template.replace("{tags}", ", ".join(tags))
+    for key, value in fields.items():
+        template = template.replace("{" + key + "}", str(value))
+    return template
 
 
 def load_untagged(db) -> list[tuple]:
@@ -145,7 +151,7 @@ def call_bedrock(bedrock, system_prompt: str, message: str) -> str:
 
 
 def normalize(raw: str, count: int, allowed: set[str]) -> tuple[list[str], int]:
-    """(태그 목록, 모델이 채우지 못한 개수) 를 돌려준다."""
+    """→ (태그 목록, 미수신 개수)"""
     mapping = to_index_map(parse_response(raw))
     tags = [
         mapping[i] if mapping.get(i) in allowed else FALLBACK_TAG
@@ -168,13 +174,95 @@ def tag_chunk(bedrock, system_prompt: str, rows: list[tuple],
             return tags
         except (ValueError, json.JSONDecodeError, KeyError, IndexError) as e:
             print(f"  실패 (시도 {attempt}): {type(e).__name__}: {e}")
-            # 원인을 보려면 실제 응답이 필요하다. 앞뒤만 남긴다.
+            # 원인 파악용 — 응답 앞뒤만
             print(f"  응답 앞 200자: {raw[:200]!r}")
             print(f"  응답 뒤 100자: {raw[-100:]!r}")
         except ClientError as e:
             print(f"Bedrock 호출 실패: {e}")
             raise
     return None
+
+
+def load_for_digest(db) -> list[tuple]:
+    """수집일 기준 최근 24시간. 발행일이 아닌 이유는 배치 주기와 맞추기 위해,
+    자정이 아닌 이유는 경계 누락 회피."""
+    sql = """
+        SELECT id, title, source, tag, description
+          FROM articles
+         WHERE collected_at >= NOW() - INTERVAL 1 DAY
+         ORDER BY published_at DESC
+    """
+    with db.cursor() as cursor:
+        cursor.execute(sql)
+        return cursor.fetchall()
+
+
+def build_digest_message(rows: list[tuple]) -> str:
+    lines = [f"기사 {len(rows)}건", ""]
+    for i, (_, title, source, tag, description) in enumerate(rows):
+        lines.append(f"{i}. [{source}][{tag or '미분류'}] {title}")
+        if description:
+            lines.append(f"   {description[:EXCERPT_LEN]}")
+    return "\n".join(lines)
+
+
+def normalize_digests(raw: str, count: int, allowed: set[str]) -> list[dict]:
+    """이슈 목록 검증 — 범위 밖 번호·중복 배정 제거"""
+    data = parse_response(raw)
+    items = data.get("digests") if isinstance(data, dict) else data
+    if not isinstance(items, list):
+        raise ValueError("digests 가 목록이 아님")
+
+    digests, used = [], set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        headline = str(item.get("headline") or "").strip()[:300]
+        if not headline:
+            continue
+
+        # 기사 중복 배정 방지
+        indexes = []
+        for v in item.get("articles") or []:
+            try:
+                i = int(v)
+            except (TypeError, ValueError):
+                continue
+            if 0 <= i < count and i not in used:
+                indexes.append(i)
+                used.add(i)
+
+        tag = str(item.get("tag") or "").strip()
+        digests.append({
+            "headline": headline,
+            "summary": str(item.get("summary") or "").strip(),
+            "tag": tag if tag in allowed else FALLBACK_TAG,
+            "articles": indexes,
+        })
+
+    if not digests:
+        raise ValueError("쓸 만한 이슈가 없음")
+    return digests[:MAX_DIGESTS]
+
+
+def save_digests(db, date_str: str, rows: list[tuple], digests: list[dict]) -> int:
+    """그날 이슈 전체 교체. digest_articles 는 FK CASCADE 로 정리됨"""
+    with db.cursor() as cursor:
+        cursor.execute("DELETE FROM digests WHERE digest_date = %s", (date_str,))
+        for rank, d in enumerate(digests, start=1):
+            cursor.execute(
+                """INSERT INTO digests (digest_date, rank_no, headline, summary, tag)
+                   VALUES (%s, %s, %s, %s, %s)""",
+                (date_str, rank, d["headline"], d["summary"], d["tag"]),
+            )
+            digest_id = cursor.lastrowid
+            if d["articles"]:
+                cursor.executemany(
+                    "INSERT IGNORE INTO digest_articles (digest_id, article_id) VALUES (%s, %s)",
+                    [(digest_id, rows[i][0]) for i in d["articles"]],
+                )
+    db.commit()
+    return len(digests)
 
 
 def save_tags(db, rows: list[tuple], tags: list[str]) -> int:
@@ -185,49 +273,77 @@ def save_tags(db, rows: list[tuple], tags: list[str]) -> int:
     return len(params)
 
 
-def lambda_handler(event, context):
-    now = datetime.now(KST)
-    print(f"태깅 시작 — {now:%Y-%m-%d %H:%M:%S} KST")
+def run_tagging(db, bedrock, allowed: set[str]) -> dict:
+    system_prompt = load_prompt(TAGGING_PROMPT, tags=", ".join(sorted(allowed)))
+    rows = load_untagged(db)
+    if not rows:
+        print("태그 없는 기사가 없습니다.")
+        return {"articles": 0, "tagged": 0, "failed": 0, "distribution": {}}
 
-    tags_allowed = load_tags()
-    system_prompt = load_prompt(tags_allowed)
+    print(f"태그 없는 기사 {len(rows)}건 · {CHUNK_SIZE}건씩 나눠 호출")
+    done_rows, done_tags, failed = [], [], 0
+    for start in range(0, len(rows), CHUNK_SIZE):
+        chunk = rows[start : start + CHUNK_SIZE]
+        print(f"[{start}-{start + len(chunk) - 1}] {len(chunk)}건")
+        tags = tag_chunk(bedrock, system_prompt, chunk, allowed)
+        if tags is None:
+            failed += len(chunk)
+            continue
+        done_rows.extend(chunk)
+        done_tags.extend(tags)
 
-    db = connect_db()
-    try:
-        rows = load_untagged(db)
-        if not rows:
-            print("태그 없는 기사가 없습니다.")
-            return {"date": now.strftime("%Y-%m-%d"), "articles": 0, "tagged": 0}
-
-        print(f"태그 없는 기사 {len(rows)}건 · {CHUNK_SIZE}건씩 나눠 호출")
-        bedrock = boto3.client("bedrock-runtime", region_name=REGION)
-        allowed = set(tags_allowed)
-
-        # 묶음별로 따로 호출
-        done_rows, done_tags, failed = [], [], 0
-        for start in range(0, len(rows), CHUNK_SIZE):
-            chunk = rows[start : start + CHUNK_SIZE]
-            print(f"[{start}-{start + len(chunk) - 1}] {len(chunk)}건")
-            tags = tag_chunk(bedrock, system_prompt, chunk, allowed)
-            if tags is None:
-                failed += len(chunk)
-                continue
-            done_rows.extend(chunk)
-            done_tags.extend(tags)
-
-        tagged = save_tags(db, done_rows, done_tags) if done_rows else 0
-    finally:
-        db.close()
-
+    tagged = save_tags(db, done_rows, done_tags) if done_rows else 0
     distribution = {}
     for tag in done_tags:
         distribution[tag] = distribution.get(tag, 0) + 1
     print(f"태그 {tagged}건 반영 · 실패 {failed}건 — {distribution}")
+    return {"articles": len(rows), "tagged": tagged,
+            "failed": failed, "distribution": distribution}
 
-    return {
-        "date": now.strftime("%Y-%m-%d"),
-        "articles": len(rows),
-        "tagged": tagged,
-        "failed": failed,
-        "distribution": distribution,
-    }
+
+def run_digests(db, bedrock, allowed: set[str], date_str: str) -> dict:
+    system_prompt = load_prompt(DIGEST_PROMPT, count=MAX_DIGESTS)
+    rows = load_for_digest(db)
+    if not rows:
+        print("오늘 수집된 기사가 없습니다.")
+        return {"candidates": 0, "digests": 0}
+
+    print(f"이슈 묶기 — 오늘 기사 {len(rows)}건")
+    message = build_digest_message(rows)
+    for attempt in (1, 2):
+        raw = ""
+        try:
+            raw = call_bedrock(bedrock, system_prompt, message)
+            digests = normalize_digests(raw, len(rows), allowed)
+            saved = save_digests(db, date_str, rows, digests)
+            for d in digests:
+                print(f"  [{d['tag']}] {d['headline']} ({len(d['articles'])}건)")
+            return {"candidates": len(rows), "digests": saved}
+        except (ValueError, json.JSONDecodeError, KeyError, IndexError) as e:
+            print(f"  실패 (시도 {attempt}): {type(e).__name__}: {e}")
+            print(f"  응답 앞 200자: {raw[:200]!r}")
+        except ClientError as e:
+            print(f"Bedrock 호출 실패: {e}")
+            raise
+
+    print("이슈 묶기 실패. 태그는 이미 저장됐습니다.")
+    return {"candidates": len(rows), "digests": 0, "error": "이슈 묶기 실패"}
+
+
+def lambda_handler(event, context):
+    now = datetime.now(KST)
+    date_str = now.strftime("%Y-%m-%d")
+    print(f"시작 — {now:%Y-%m-%d %H:%M:%S} KST")
+
+    allowed = set(load_tags())
+    bedrock = boto3.client("bedrock-runtime", region_name=REGION)
+
+    db = connect_db()
+    try:
+        # 태깅 먼저 — 이슈 묶기의 입력
+        tagging = run_tagging(db, bedrock, allowed)
+        digests = run_digests(db, bedrock, allowed, date_str)
+    finally:
+        db.close()
+
+    return {"date": date_str, "tagging": tagging, "digests": digests}
